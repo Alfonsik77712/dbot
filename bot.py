@@ -2,14 +2,11 @@ import os
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime, timezone, timedelta
 
 # ---------- НАСТРОЙКИ ----------
-ADMIN_IDS = {
-    1072968512076787744,
-    770549354783571978,
-    392978988877873162,
-}
+MAIN_ADMIN = 1072968512076787744  # главный админ
+event_admins = {MAIN_ADMIN}       # список админов
 
 TOKEN = os.getenv("TOKEN")
 MSK = timezone(timedelta(hours=3))
@@ -20,8 +17,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------- ХРАНЕНИЕ ДАННЫХ ----------
-# Полная изоляция по серверам и каналам
-events = {}          # events[guild_id][channel_id][event_id] = {...}
+events = {}          # events[guild_id][channel_id][event_id]
 event_messages = {}  # event_messages[guild_id][channel_id][event_id] = message_id
 main_messages = {}   # main_messages[guild_id][channel_id] = message_id
 
@@ -39,7 +35,7 @@ def make_event_embed(event: dict) -> discord.Embed:
         description=(
             f"Статус: **{status}**\n"
             f"Мест: {len(event['users'])}/{event['max']}\n"
-            f"Закрытие по МСК: {event['close_time'].strftime('%H:%M')}\n\n"
+            f"Закрытие: {event['close_time'].strftime('%Y-%m-%d %H:%M')}\n\n"
             f"**Участники:**\n{users_text}"
         ),
         color=0x2f3136 if not event["closed"] else 0x555555,
@@ -126,12 +122,10 @@ async def handle_join(interaction: discord.Interaction, guild_id: int, channel_i
     now_msk = datetime.now(MSK)
     event["users"][interaction.user.id] = now_msk.strftime("%H:%M:%S")
 
-    # обновляем embed мероприятия
     msg_id = event_messages[guild_id][channel_id][event_id]
     msg = await interaction.channel.fetch_message(msg_id)
     await msg.edit(embed=make_event_embed(event), view=EventView(guild_id, channel_id, event_id))
 
-    # обновляем список
     await update_list(guild_id, interaction.channel)
 
     await interaction.response.send_message("Ты записан!", ephemeral=True)
@@ -155,7 +149,6 @@ async def auto_close_events():
                     event["closed"] = True
                     changed = True
 
-                    # обновляем embed мероприятия
                     msg_id = event_messages[guild_id][channel_id][event_id]
                     try:
                         msg = await channel.fetch_message(msg_id)
@@ -168,17 +161,24 @@ async def auto_close_events():
 
 
 # ---------- КОМАНДЫ ----------
+@bot.tree.command(name="addeventadmin", description="Добавить администратора мероприятий")
+async def add_event_admin(interaction: discord.Interaction, user: discord.Member):
+    if interaction.user.id != MAIN_ADMIN:
+        return await interaction.response.send_message("Ты не главный админ.", ephemeral=True)
+
+    event_admins.add(user.id)
+    await interaction.response.send_message(f"{user.mention} теперь администратор мероприятий.", ephemeral=True)
+
+
 @bot.tree.command(name="event_create", description="Создать мероприятие")
 async def event_create(interaction: discord.Interaction, name: str, max_people: int, close_at: str, image: discord.Attachment | None = None):
-    if interaction.user.id not in ADMIN_IDS:
+    if interaction.user.id not in event_admins:
         return await interaction.response.send_message("Нет прав.", ephemeral=True)
 
     try:
-        hh, mm = map(int, close_at.split(":"))
-        today = datetime.now(MSK).date()
-        close_dt = datetime.combine(today, dtime(hour=hh, minute=mm, tzinfo=MSK))
+        close_dt = datetime.strptime(close_at, "%Y-%m-%d %H:%M").replace(tzinfo=MSK)
     except:
-        return await interaction.response.send_message("Формат HH:MM", ephemeral=True)
+        return await interaction.response.send_message("Формат даты: YYYY-MM-DD HH:MM", ephemeral=True)
 
     guild_id = interaction.guild.id
     channel = interaction.channel
@@ -201,22 +201,20 @@ async def event_create(interaction: discord.Interaction, name: str, max_people: 
     event_messages.setdefault(guild_id, {})
     event_messages[guild_id].setdefault(channel_id, {})
 
-    # отправляем embed мероприятия
     msg = await channel.send(
         embed=make_event_embed(events[guild_id][channel_id][event_id]),
         view=EventView(guild_id, channel_id, event_id)
     )
     event_messages[guild_id][channel_id][event_id] = msg.id
 
-    # обновляем список
     await update_list(guild_id, channel)
 
     await interaction.response.send_message(f"Мероприятие #{event_id} создано.", ephemeral=True)
 
 
-@bot.tree.command(name="event_delete", description="Удалить мероприятие")
-async def event_delete(interaction: discord.Interaction, event_id: int):
-    if interaction.user.id not in ADMIN_IDS:
+@bot.tree.command(name="event_edit", description="Редактировать мероприятие")
+async def event_edit(interaction: discord.Interaction, event_id: int, name: str | None = None, max_people: int | None = None, close_at: str | None = None, image: discord.Attachment | None = None):
+    if interaction.user.id not in event_admins:
         return await interaction.response.send_message("Нет прав.", ephemeral=True)
 
     guild_id = interaction.guild.id
@@ -226,7 +224,65 @@ async def event_delete(interaction: discord.Interaction, event_id: int):
     if guild_id not in events or channel_id not in events[guild_id] or event_id not in events[guild_id][channel_id]:
         return await interaction.response.send_message("Не найдено.", ephemeral=True)
 
-    # удаляем сообщение мероприятия
+    event = events[guild_id][channel_id][event_id]
+
+    if name:
+        event["name"] = name
+    if max_people:
+        event["max"] = max_people
+    if close_at:
+        try:
+            event["close_time"] = datetime.strptime(close_at, "%Y-%m-%d %H:%M").replace(tzinfo=MSK)
+        except:
+            return await interaction.response.send_message("Формат даты: YYYY-MM-DD HH:MM", ephemeral=True)
+    if image:
+        event["image_url"] = image.url
+
+    msg_id = event_messages[guild_id][channel_id][event_id]
+    msg = await channel.fetch_message(msg_id)
+    await msg.edit(embed=make_event_embed(event), view=EventView(guild_id, channel_id, event_id))
+
+    await update_list(guild_id, channel)
+
+    await interaction.response.send_message("Обновлено.", ephemeral=True)
+
+
+@bot.tree.command(name="event_clear", description="Очистить участников")
+async def event_clear(interaction: discord.Interaction, event_id: int):
+    if interaction.user.id not in event_admins:
+        return await interaction.response.send_message("Нет прав.", ephemeral=True)
+
+    guild_id = interaction.guild.id
+    channel = interaction.channel
+    channel_id = channel.id
+
+    if guild_id not in events or channel_id not in events[guild_id] or event_id not in events[guild_id][channel_id]:
+        return await interaction.response.send_message("Не найдено.", ephemeral=True)
+
+    events[guild_id][channel_id][event_id]["users"] = {}
+
+    msg_id = event_messages[guild_id][channel_id][event_id]
+    msg = await channel.fetch_message(msg_id)
+    await msg.edit(embed=make_event_embed(events[guild_id][channel_id][event_id]),
+                   view=EventView(guild_id, channel_id, event_id))
+
+    await update_list(guild_id, channel)
+
+    await interaction.response.send_message("Участники очищены.", ephemeral=True)
+
+
+@bot.tree.command(name="event_delete", description="Удалить мероприятие")
+async def event_delete(interaction: discord.Interaction, event_id: int):
+    if interaction.user.id not in event_admins:
+        return await interaction.response.send_message("Нет прав.", ephemeral=True)
+
+    guild_id = interaction.guild.id
+    channel = interaction.channel
+    channel_id = channel.id
+
+    if guild_id not in events or channel_id not in events[guild_id] or event_id not in events[guild_id][channel_id]:
+        return await interaction.response.send_message("Не найдено.", ephemeral=True)
+
     msg_id = event_messages[guild_id][channel_id][event_id]
     try:
         msg = await channel.fetch_message(msg_id)
