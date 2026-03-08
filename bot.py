@@ -5,9 +5,12 @@ from discord import app_commands
 from datetime import datetime, time as dtime, timedelta, timezone
 
 # ---------- НАСТРОЙКИ ----------
-ADMIN_ID = 1072968512076787744
-TOKEN = os.getenv("TOKEN")  # БЕЗОПАСНО: токен берётся из переменной окружения
-MAIN_CHANNEL_ID = 1446948489887088734
+ADMIN_IDS = {
+    1072968512076787744, 770549354783571978, 392978988877873162,
+}
+
+TOKEN = os.getenv("TOKEN")  # токен берётся из переменной окружения
+MAIN_CHANNEL_ID = 1472257169029202134
 
 MSK = timezone(timedelta(hours=3))
 
@@ -150,7 +153,7 @@ async def event_create(
     close_at: str,
     image: discord.Attachment | None = None,
 ):
-    if interaction.user.id != ADMIN_ID:
+    if interaction.user.id not in ADMIN_IDS:
         return await interaction.response.send_message("Нет прав.", ephemeral=True)
 
     try:
@@ -192,7 +195,7 @@ async def event_edit(
     close_at: str | None = None,
     image: discord.Attachment | None = None,
 ):
-    if interaction.user.id != ADMIN_ID:
+    if interaction.user.id not in ADMIN_IDS:
         return await interaction.response.send_message("Нет прав.", ephemeral=True)
 
     event = events.get(event_id)
@@ -223,7 +226,7 @@ async def event_edit(
 # ---------- ОЧИСТКА ----------
 @bot.tree.command(name="event_clear", description="Очистить участников")
 async def event_clear(interaction: discord.Interaction, event_id: int):
-    if interaction.user.id != ADMIN_ID:
+    if interaction.user.id not in ADMIN_IDS:
         return await interaction.response.send_message("Нет прав.", ephemeral=True)
 
     event = events.get(event_id)
@@ -238,7 +241,7 @@ async def event_clear(interaction: discord.Interaction, event_id: int):
 # ---------- УДАЛЕНИЕ ----------
 @bot.tree.command(name="event_delete", description="Удалить мероприятие")
 async def event_delete(interaction: discord.Interaction, event_id: int):
-    if interaction.user.id != ADMIN_ID:
+    if interaction.user.id not in ADMIN_IDS:
         return await interaction.response.send_message("Нет прав.", ephemeral=True)
 
     if event_id not in events:
