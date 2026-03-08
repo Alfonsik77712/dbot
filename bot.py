@@ -6,12 +6,12 @@ from datetime import datetime, time as dtime, timedelta, timezone
 
 # ---------- НАСТРОЙКИ ----------
 ADMIN_IDS = {
-    1072968512076787744, 770549354783571978, 392978988877873162,
+    1072968512076787744,
+    770549354783571978,
+    392978988877873162,
 }
 
-TOKEN = os.getenv("TOKEN")  # токен берётся из переменной окружения
-MAIN_CHANNEL_ID = 1472257169029202134
-
+TOKEN = os.getenv("TOKEN")
 MSK = timezone(timedelta(hours=3))
 
 intents = discord.Intents.default()
@@ -21,6 +21,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 events = {}
 MAIN_MESSAGE_ID = None
+MAIN_CHANNEL = None  # теперь канал определяется автоматически
 
 
 # ---------- EMBED ----------
@@ -74,26 +75,29 @@ class EventsView(discord.ui.View):
 
 
 # ---------- ОБНОВЛЕНИЕ ГЛАВНОГО СООБЩЕНИЯ ----------
-async def update_main_message():
-    global MAIN_MESSAGE_ID
+async def update_main_message(interaction=None):
+    global MAIN_MESSAGE_ID, MAIN_CHANNEL
 
-    channel = bot.get_channel(MAIN_CHANNEL_ID)
-    if channel is None:
-        channel = await bot.fetch_channel(MAIN_CHANNEL_ID)
+    # если команда вызвана — обновляем канал
+    if interaction is not None:
+        MAIN_CHANNEL = interaction.channel
+
+    # если бот перезапустился — MAIN_CHANNEL может быть None
+    if MAIN_CHANNEL is None:
+        return  # ждём первой команды
 
     embeds = [make_event_embed(eid, ev) for eid, ev in sorted(events.items())]
-
     view = EventsView() if any(not e["closed"] for e in events.values()) else None
 
     if MAIN_MESSAGE_ID is None:
-        msg = await channel.send("**Список мероприятий:**", embeds=embeds, view=view)
+        msg = await MAIN_CHANNEL.send("**Список мероприятий:**", embeds=embeds, view=view)
         MAIN_MESSAGE_ID = msg.id
     else:
         try:
-            msg = await channel.fetch_message(MAIN_MESSAGE_ID)
+            msg = await MAIN_CHANNEL.fetch_message(MAIN_MESSAGE_ID)
             await msg.edit(content="**Список мероприятий:**", embeds=embeds, view=view)
         except discord.NotFound:
-            msg = await channel.send("**Список мероприятий:**", embeds=embeds, view=view)
+            msg = await MAIN_CHANNEL.send("**Список мероприятий:**", embeds=embeds, view=view)
             MAIN_MESSAGE_ID = msg.id
 
 
@@ -101,24 +105,18 @@ async def update_main_message():
 async def handle_join(interaction: discord.Interaction, event_id: int):
     event = events.get(event_id)
     if not event or event["closed"]:
-        return await interaction.response.send_message(
-            "Это мероприятие закрыто.", ephemeral=True
-        )
+        return await interaction.response.send_message("Это мероприятие закрыто.", ephemeral=True)
 
     if interaction.user.id in event["users"]:
-        return await interaction.response.send_message(
-            "Ты уже записан!", ephemeral=True
-        )
+        return await interaction.response.send_message("Ты уже записан!", ephemeral=True)
 
     if len(event["users"]) >= event["max"]:
-        return await interaction.response.send_message(
-            "Мест больше нет!", ephemeral=True
-        )
+        return await interaction.response.send_message("Мест больше нет!", ephemeral=True)
 
     now_msk = datetime.now(MSK)
     event["users"][interaction.user.id] = now_msk.strftime("%H:%M:%S")
 
-    await update_main_message()
+    await update_main_message(interaction)
     await interaction.response.send_message("Ты записан!", ephemeral=True)
 
 
@@ -138,7 +136,6 @@ async def auto_close_events():
 
 
 # ---------- КОМАНДЫ ----------
-
 @bot.tree.command(name="event_create", description="Создать мероприятие")
 @app_commands.describe(
     name="Название",
@@ -146,13 +143,7 @@ async def auto_close_events():
     close_at="Время закрытия по МСК (HH:MM)",
     image="Картинка"
 )
-async def event_create(
-    interaction: discord.Interaction,
-    name: str,
-    max_people: int,
-    close_at: str,
-    image: discord.Attachment | None = None,
-):
+async def event_create(interaction: discord.Interaction, name: str, max_people: int, close_at: str, image: discord.Attachment | None = None):
     if interaction.user.id not in ADMIN_IDS:
         return await interaction.response.send_message("Нет прав.", ephemeral=True)
 
@@ -174,11 +165,10 @@ async def event_create(
         "closed": False,
     }
 
-    await update_main_message()
+    await update_main_message(interaction)
     await interaction.response.send_message(f"Мероприятие #{event_id} создано.", ephemeral=True)
 
 
-# ---------- РЕДАКТИРОВАНИЕ ----------
 @bot.tree.command(name="event_edit", description="Редактировать мероприятие")
 @app_commands.describe(
     event_id="ID мероприятия",
@@ -187,14 +177,7 @@ async def event_create(
     close_at="Новое время закрытия (HH:MM)",
     image="Новая картинка"
 )
-async def event_edit(
-    interaction: discord.Interaction,
-    event_id: int,
-    name: str | None = None,
-    max_people: int | None = None,
-    close_at: str | None = None,
-    image: discord.Attachment | None = None,
-):
+async def event_edit(interaction: discord.Interaction, event_id: int, name: str | None = None, max_people: int | None = None, close_at: str | None = None, image: discord.Attachment | None = None):
     if interaction.user.id not in ADMIN_IDS:
         return await interaction.response.send_message("Нет прав.", ephemeral=True)
 
@@ -204,10 +187,8 @@ async def event_edit(
 
     if name:
         event["name"] = name
-
     if max_people:
         event["max"] = max_people
-
     if close_at:
         try:
             hh, mm = map(int, close_at.split(":"))
@@ -215,15 +196,13 @@ async def event_edit(
             event["close_time"] = datetime.combine(today, dtime(hour=hh, minute=mm, tzinfo=MSK))
         except:
             return await interaction.response.send_message("Формат HH:MM", ephemeral=True)
-
     if image:
         event["image_url"] = image.url
 
-    await update_main_message()
+    await update_main_message(interaction)
     await interaction.response.send_message(f"Мероприятие #{event_id} обновлено.", ephemeral=True)
 
 
-# ---------- ОЧИСТКА ----------
 @bot.tree.command(name="event_clear", description="Очистить участников")
 async def event_clear(interaction: discord.Interaction, event_id: int):
     if interaction.user.id not in ADMIN_IDS:
@@ -234,11 +213,10 @@ async def event_clear(interaction: discord.Interaction, event_id: int):
         return await interaction.response.send_message("Не найдено.", ephemeral=True)
 
     event["users"] = {}
-    await update_main_message()
+    await update_main_message(interaction)
     await interaction.response.send_message("Очищено.", ephemeral=True)
 
 
-# ---------- УДАЛЕНИЕ ----------
 @bot.tree.command(name="event_delete", description="Удалить мероприятие")
 async def event_delete(interaction: discord.Interaction, event_id: int):
     if interaction.user.id not in ADMIN_IDS:
@@ -248,7 +226,7 @@ async def event_delete(interaction: discord.Interaction, event_id: int):
         return await interaction.response.send_message("Не найдено.", ephemeral=True)
 
     del events[event_id]
-    await update_main_message()
+    await update_main_message(interaction)
     await interaction.response.send_message("Удалено.", ephemeral=True)
 
 
@@ -258,7 +236,6 @@ async def on_ready():
     await bot.tree.sync()
     auto_close_events.start()
     print(f"Бот запущен как {bot.user}")
-    await update_main_message()
 
 
 bot.run(TOKEN)
